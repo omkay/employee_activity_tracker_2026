@@ -1,5 +1,7 @@
 # Employee Activity Tracking — research notebook
 
+> **REST service documentation** → see [SERVICE.md](SERVICE.md)
+
 End-to-end computer-vision pipeline that watches office surveillance video and produces
 structured activity events per employee (presence at desk, phone usage, colleague
 interactions).
