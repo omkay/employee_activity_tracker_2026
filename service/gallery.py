@@ -11,6 +11,7 @@ import numpy as np
 
 from .config import GALLERY_DIR, GALLERY_PATH
 from .models import FaceEmbedder, ReIDEmbedder
+from .storage import resolve_source
 
 
 @dataclasses.dataclass
@@ -102,17 +103,36 @@ def enroll_person(name: str, face_paths: List[str], body_paths: List[str],
         raise ValueError(f"Invalid employee name: {name!r}")
     person = _person_dir(name)
     copied_face, copied_body = 0, 0
+
+    # Full replace, not additive: callers (e.g. Hr_SmartPay) always send the
+    # complete current set of photos for this person on every /enroll call,
+    # including after a photo was deleted. Without clearing first, a deleted
+    # photo's file would stay on disk forever and keep contributing to the
+    # averaged face embedding / ReID bank.
+    for existing in (person / "face").glob("*.*"):
+        existing.unlink()
+    for existing in (person / "body").glob("*.*"):
+        existing.unlink()
+
+    def _dest_name(src: str, local_path: str) -> str:
+        # For remote sources, resolve_source() yields a random temp-file name —
+        # keep the caller's original filename (minus query string) instead.
+        clean = src.split("?")[0].split("#")[0]
+        return Path(clean).name or Path(local_path).name
+
     for src in face_paths:
-        sp = Path(src)
-        if not sp.exists():
-            raise FileNotFoundError(f"Face image not found: {src}")
-        shutil.copy2(sp, person / "face" / sp.name)
+        with resolve_source(src) as local_path:
+            sp = Path(local_path)
+            if not sp.exists():
+                raise FileNotFoundError(f"Face image not found: {src}")
+            shutil.copy2(sp, person / "face" / _dest_name(src, local_path))
         copied_face += 1
     for src in body_paths:
-        sp = Path(src)
-        if not sp.exists():
-            raise FileNotFoundError(f"Body image not found: {src}")
-        shutil.copy2(sp, person / "body" / sp.name)
+        with resolve_source(src) as local_path:
+            sp = Path(local_path)
+            if not sp.exists():
+                raise FileNotFoundError(f"Body image not found: {src}")
+            shutil.copy2(sp, person / "body" / _dest_name(src, local_path))
         copied_body += 1
 
     face_vec, bank, n_face, n_body = _embed_person(person, face_emb, reid_emb)

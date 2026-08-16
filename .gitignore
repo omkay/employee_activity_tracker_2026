@@ -23,3 +23,6 @@ data/
 
 # ── insightface model cache ──
 models/buffalo_l/
+
+# ── enrolled-identity gallery (generated locally by /enroll, not source) ──
+gallery/

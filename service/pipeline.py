@@ -18,6 +18,7 @@ from .schemas import ZoneDefinition
 from .gallery import EmployeeGallery
 from .identity import IdentityFuser, UNKNOWN_LABEL
 from .models import get_detector, get_face_embedder, get_reid_embedder
+from .storage import resolve_source
 
 
 def run_pipeline(
@@ -38,6 +39,36 @@ def run_pipeline(
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> Tuple[pd.DataFrame, Optional[Path]]:
     """Process a video and return (events_df, annotated_video_path)."""
+    with resolve_source(video_path) as local_path:
+        return _run_pipeline_local(
+            local_path, gallery,
+            zones=zones, camera_id=camera_id,
+            det_conf=det_conf, det_iou=det_iou,
+            face_thr=face_thr, reid_thr=reid_thr,
+            fuse_win=fuse_win, stride=stride,
+            max_frames=max_frames, prox_px=prox_px,
+            write_video=write_video, progress=progress,
+        )
+
+
+def _run_pipeline_local(
+    video_path: str,
+    gallery: Optional[EmployeeGallery] = None,
+    *,
+    zones: Optional[List[ZoneDefinition]] = None,
+    camera_id: str = "cam0",
+    det_conf: float = DEFAULT_DET_CONF,
+    det_iou: float = DEFAULT_DET_IOU,
+    face_thr: float = DEFAULT_FACE_THR,
+    reid_thr: float = DEFAULT_REID_THR,
+    fuse_win: int = DEFAULT_FUSE_WIN,
+    stride: int = DEFAULT_STRIDE,
+    max_frames: int = DEFAULT_MAX_FRAMES,
+    prox_px: int = DEFAULT_PROX_PX,
+    write_video: bool = False,
+    progress: Optional[Callable[[int, int], None]] = None,
+) -> Tuple[pd.DataFrame, Optional[Path]]:
+    """Internal: run pipeline on a guaranteed-local path."""
     vp = Path(video_path)
     if not vp.exists():
         raise FileNotFoundError(f"Video not found: {video_path}")
@@ -175,12 +206,16 @@ def _checkin_bgr(img: np.ndarray, gallery: EmployeeGallery,
 def checkin(image_path: str, gallery: EmployeeGallery,
             face_thr: float = DEFAULT_FACE_THR,
             reid_thr: float = DEFAULT_REID_THR) -> dict:
-    """Identify the most prominent person in a single image. Returns a dict
-    with employee_id, confidence, and method ('face' | 'reid' | 'none')."""
-    img = cv2.imread(image_path)
-    if img is None:
-        raise FileNotFoundError(f"Could not read image: {image_path}")
-    return _checkin_bgr(img, gallery, face_thr=face_thr, reid_thr=reid_thr)
+    """Identify the most prominent person in a single image.
+
+    *image_path* may be a local path, an HTTP/HTTPS URL, or an S3 URI.
+    Returns a dict with employee_id, confidence, and method.
+    """
+    with resolve_source(image_path) as local_path:
+        img = cv2.imread(local_path)
+        if img is None:
+            raise FileNotFoundError(f"Could not read image: {image_path}")
+        return _checkin_bgr(img, gallery, face_thr=face_thr, reid_thr=reid_thr)
 
 
 def checkin_video(
@@ -190,9 +225,9 @@ def checkin_video(
     face_thr: float = DEFAULT_FACE_THR,
     reid_thr: float = DEFAULT_REID_THR,
     stride: int = 5,
-    motion_thr: float = 0.01,
-    blur_thr: float = 80.0,
-    early_exit_conf: float = 0.90,
+    motion_thr: float = 0.013,
+    blur_thr: float = 183.0,
+    early_exit_conf: float = 0.77,
     max_frames: int = 500,
 ) -> dict:
     """Identify the most prominent person across a video file or camera stream.
@@ -236,6 +271,29 @@ def checkin_video(
         skipped_blur       — frames dropped by the blur gate.
         skipped_no_face    — frames that were sharp/moving but had no face/person.
     """
+    # resolve_source handles HTTP/S3 downloads; streams/local paths pass through.
+    with resolve_source(source) as local_path:
+        return _checkin_video_local(
+            local_path, gallery,
+            face_thr=face_thr, reid_thr=reid_thr,
+            stride=stride, motion_thr=motion_thr, blur_thr=blur_thr,
+            early_exit_conf=early_exit_conf, max_frames=max_frames,
+        )
+
+
+def _checkin_video_local(
+    source: str,
+    gallery: EmployeeGallery,
+    *,
+    face_thr: float = DEFAULT_FACE_THR,
+    reid_thr: float = DEFAULT_REID_THR,
+    stride: int = 5,
+    motion_thr: float = 0.013,
+    blur_thr: float = 183.0,
+    early_exit_conf: float = 0.77,
+    max_frames: int = 500,
+) -> dict:
+    """Internal: run checkin_video on a local path or stream URI."""
     cap = cv2.VideoCapture(source if not str(source).isdigit() else int(source))
     if not cap.isOpened():
         raise RuntimeError(f"Could not open video source: {source}")
